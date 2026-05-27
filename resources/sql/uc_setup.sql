@@ -1,3 +1,4 @@
+-- Unity Catalog foundation created from GitHub review.
 USE CATALOG adb_classic_compute_catalog;
 
 CREATE SCHEMA IF NOT EXISTS landing
