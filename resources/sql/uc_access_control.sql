@@ -1,12 +1,3 @@
-SHOW GRANTS ON CATALOG adb_classic_compute_catalog;
-
-SHOW GRANTS ON SCHEMA adb_classic_compute_catalog.bronze;
-
-SHOW GRANTS ON SCHEMA adb_classic_compute_catalog.gold;
-
-SHOW GRANTS ON SCHEMA adb_classic_compute_catalog.governance;
-
-
 -- establish minimum namespace access for the platform engineering role
 -- grants permit traversal to the Bronze schema only
 

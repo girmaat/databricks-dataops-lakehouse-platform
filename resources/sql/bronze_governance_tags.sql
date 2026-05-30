@@ -32,6 +32,12 @@ SET TAGS (
     'pii_category' = 'user_principal_name'
 );
 
+-- 3. Add explicit PII table property to the real Bronze employee table.
+
+ALTER TABLE employee_directory_snapshot_raw
+SET TBLPROPERTIES (
+    'contains_pii' = 'true'
+);
 
 --  Validate table-level tags.
 
@@ -60,3 +66,14 @@ FROM adb_classic_compute_catalog.information_schema.column_tags
 WHERE schema_name = 'bronze'
   AND table_name = 'employee_directory_snapshot_raw'
 ORDER BY column_name, tag_name;
+
+
+DESCRIBE EXTENDED
+  adb_classic_compute_catalog.bronze.employee_directory_snapshot_raw;
+
+SHOW TBLPROPERTIES
+  adb_classic_compute_catalog.bronze.employee_directory_snapshot_raw;
+
+SHOW TBLPROPERTIES
+  adb_classic_compute_catalog.bronze.employee_directory_snapshot_raw
+  ('contains_pii');
