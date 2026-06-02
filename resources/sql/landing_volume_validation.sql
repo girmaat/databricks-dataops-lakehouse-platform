@@ -32,3 +32,12 @@ LIST '/Volumes/adb_classic_compute_catalog/landing/source_deliveries/license_ass
 -- 6. Confirm the application usage event delivery file exists.
 
 LIST '/Volumes/adb_classic_compute_catalog/landing/source_deliveries/application_usage_event/delivery_date=2026-05-15/';
+
+
+
+DESCRIBE TABLE adb_classic_compute_catalog.bronze.application_usage_event_raw;
+
+
+
+
+
