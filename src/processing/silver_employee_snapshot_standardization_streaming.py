@@ -20,18 +20,14 @@ def parse_date(column_name: str):
     """
     Convert common source date string formats into DATE.
 
-    Examples handled:
-      - 7/19/2021
-      - 04/30/2026
-      - 2026-02-30
-
-    Invalid dates, such as 2026-02-30, become NULL.
-    Quality validation will handle those NULLs later.
+    Invalid dates, such as 2026-02-30, become NULL instead of failing
+    the stream. The quality step will later quarantine those rows with
+    a reason such as invalid_hire_date.
     """
     return F.coalesce(
-        F.to_date(F.col(column_name), "M/d/yyyy"),
-        F.to_date(F.col(column_name), "MM/dd/yyyy"),
-        F.to_date(F.col(column_name), "yyyy-MM-dd"),
+        F.expr(f"try_to_date({column_name}, 'M/d/yyyy')"),
+        F.expr(f"try_to_date({column_name}, 'MM/dd/yyyy')"),
+        F.expr(f"try_to_date({column_name}, 'yyyy-MM-dd')"),
     )
 
 
