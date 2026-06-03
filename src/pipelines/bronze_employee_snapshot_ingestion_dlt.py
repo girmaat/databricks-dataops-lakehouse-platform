@@ -1,7 +1,7 @@
 # Read landed employee snapshot CSV deliveries from a Unity Catalog Volume using Auto Loader and create a managed Bronze streaming table.
 
 import dlt
-from pyspark.sql import function as F
+from pyspark.sql import functions as F
 
 CATALOG_NAME = "adb_classic_compute_catalog"
 
