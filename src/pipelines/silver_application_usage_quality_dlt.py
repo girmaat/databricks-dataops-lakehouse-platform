@@ -96,8 +96,6 @@ def application_usage_event_quality_dlt():
     )
 
     return quality_df
-
-
 @dlt.table(
     name="application_usage_event_valid_dlt",
     comment="""
@@ -105,11 +103,12 @@ def application_usage_event_quality_dlt():
     Gold usage analytics should read from this table.
     """
 )
+@dlt.expect_or_drop(
+    "valid_usage_event_not_quarantined",
+    "is_quarantined = false"
+)
 def application_usage_event_valid_dlt():
-    return (
-        dlt.read("application_usage_event_quality_dlt")
-        .filter(F.col("is_quarantined") == F.lit(False))
-    )
+    return dlt.read("application_usage_event_quality_dlt")
 
 
 @dlt.table(
@@ -120,8 +119,9 @@ def application_usage_event_valid_dlt():
     preserved for investigation.
     """
 )
+@dlt.expect_or_drop(
+    "quarantined_usage_event",
+    "is_quarantined = true"
+)
 def application_usage_event_quarantine_dlt():
-    return (
-        dlt.read("application_usage_event_quality_dlt")
-        .filter(F.col("is_quarantined") == F.lit(True))
-    )
+    return dlt.read("application_usage_event_quality_dlt")
