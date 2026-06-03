@@ -1,0 +1,3 @@
+SELECT *
+FROM adb_classic_compute_catalog.bronze.employee_directory_snapshot_raw
+LIMIT 20;
