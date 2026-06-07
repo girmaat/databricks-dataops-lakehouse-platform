@@ -2,6 +2,13 @@ import dlt
 from pyspark.sql import Window
 from pyspark.sql import functions as F
 
+from quality_rules import (
+    is_blank,
+    add_quality_columns,
+    valid_rows,
+    quarantine_rows,
+)
+
 
 CATALOG_NAME = "adb_classic_compute_catalog"
 REFERENCE_TABLE = f"{CATALOG_NAME}.governance.department_region_reference"
@@ -14,7 +21,8 @@ UPN_REGEX = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
 @dlt.table(
     name="employee_snapshot_quality_dlt",
     comment=(
-        "Employee Silver quality table. Adds quality_reasons and is_quarantined flags to standardized employee records."
+        "Employee Silver quality table. Applies reusable S05.02 quality rules, "
+        "adds quality_reasons, quality_reason_text, and is_quarantined."
     ),
 )
 def employee_snapshot_quality_dlt():
@@ -49,7 +57,7 @@ def employee_snapshot_quality_dlt():
 
     duplicate_window = Window.partitionBy("employee_id")
 
-    quality_df = (
+    employee_with_context_df = (
         joined_df
         .withColumn(
             "employee_id_occurrence_count",
@@ -58,86 +66,69 @@ def employee_snapshot_quality_dlt():
                 F.count("*").over(duplicate_window),
             ).otherwise(F.lit(None)),
         )
-        .withColumn(
-            "quality_reasons_raw",
-            F.array(
-                F.when(F.col("employee_id").isNull(), F.lit("missing_employee_id")),
-                F.when(F.col("employee_id_occurrence_count") > 1, F.lit("duplicate_employee_id")),
-
-                F.when(F.col("user_principal_name").isNull(), F.lit("missing_user_principal_name")),
-                F.when(
-                    F.col("user_principal_name").isNotNull()
-                    & (~F.col("user_principal_name").rlike(UPN_REGEX)),
-                    F.lit("invalid_user_principal_name"),
-                ),
-
-                F.when(F.col("employment_status").isNull(), F.lit("missing_employment_status")),
-                F.when(
-                    F.col("employment_status").isNotNull()
-                    & (~F.col("employment_status").isin(SUPPORTED_EMPLOYMENT_STATUSES)),
-                    F.lit("unsupported_employment_status"),
-                ),
-
-                F.when(F.col("hire_date").isNull(), F.lit("invalid_hire_date")),
-
-                F.when(
-                    F.col("termination_date").isNull()
-                    & (F.col("employment_status") == F.lit("TERMINATED")),
-                    F.lit("terminated_employee_missing_termination_date"),
-                ),
-                F.when(
-                    F.col("termination_date").isNotNull()
-                    & (F.col("employment_status") == F.lit("ACTIVE")),
-                    F.lit("active_employee_has_termination_date"),
-                ),
-                F.when(
-                    F.col("termination_date").isNotNull()
-                    & F.col("hire_date").isNotNull()
-                    & (F.col("termination_date") < F.col("hire_date")),
-                    F.lit("invalid_termination_date"),
-                ),
-
-                F.when(F.col("department_id").isNull(), F.lit("missing_department_id")),
-                F.when(F.col("region_code").isNull(), F.lit("missing_region_code")),
-                F.when(
-                    F.col("department_id").isNotNull()
-                    & F.col("region_code").isNotNull()
-                    & F.col("ref_department_id").isNull(),
-                    F.lit("unknown_department_region_reference"),
-                ),
-            ),
-        )
-        .withColumn(
-            "quality_reasons",
-            F.expr("filter(quality_reasons_raw, reason -> reason is not null)"),
-        )
-        .withColumn(
-            "is_quarantined",
-            F.size(F.col("quality_reasons")) > 0,
-        )
-        .drop("quality_reasons_raw")
     )
 
-    return quality_df
+    rules = [
+        ("missing_employee_id", is_blank("employee_id")),
+        ("duplicate_employee_id", F.col("employee_id_occurrence_count") > 1),
+
+        ("missing_user_principal_name", is_blank("user_principal_name")),
+        (
+            "invalid_user_principal_name",
+            F.col("user_principal_name").isNotNull()
+            & (~F.col("user_principal_name").rlike(UPN_REGEX)),
+        ),
+
+        ("missing_employment_status", is_blank("employment_status")),
+        (
+            "unsupported_employment_status",
+            F.col("employment_status").isNotNull()
+            & (~F.col("employment_status").isin(SUPPORTED_EMPLOYMENT_STATUSES)),
+        ),
+
+        ("invalid_hire_date", F.col("hire_date").isNull()),
+
+        (
+            "terminated_employee_missing_termination_date",
+            F.col("termination_date").isNull()
+            & (F.col("employment_status") == F.lit("TERMINATED")),
+        ),
+        (
+            "active_employee_has_termination_date",
+            F.col("termination_date").isNotNull()
+            & (F.col("employment_status") == F.lit("ACTIVE")),
+        ),
+        (
+            "invalid_termination_date",
+            F.col("termination_date").isNotNull()
+            & F.col("hire_date").isNotNull()
+            & (F.col("termination_date") < F.col("hire_date")),
+        ),
+
+        ("missing_department_id", is_blank("department_id")),
+        ("missing_region_code", is_blank("region_code")),
+        (
+            "unknown_department_region_reference",
+            F.col("department_id").isNotNull()
+            & F.col("region_code").isNotNull()
+            & F.col("ref_department_id").isNull(),
+        ),
+    ]
+
+    return add_quality_columns(employee_with_context_df, rules)
 
 
 @dlt.table(
     name="employee_snapshot_valid_dlt",
-    comment="Valid employee Silver records after employee quality validation.",
+    comment="Valid employee Silver records after reusable S05.02 employee quality validation.",
 )
 def employee_snapshot_valid_dlt():
-    return (
-        dlt.read("employee_snapshot_quality_dlt")
-        .where(F.col("is_quarantined") == False)
-    )
+    return valid_rows(dlt.read("employee_snapshot_quality_dlt"))
 
 
 @dlt.table(
     name="employee_snapshot_quarantine_dlt",
-    comment="Quarantined employee Silver records with quality reasons.",
+    comment="Quarantined employee Silver records with reusable S05.02 quality reasons.",
 )
 def employee_snapshot_quarantine_dlt():
-    return (
-        dlt.read("employee_snapshot_quality_dlt")
-        .where(F.col("is_quarantined") == True)
-    )
+    return quarantine_rows(dlt.read("employee_snapshot_quality_dlt"))
