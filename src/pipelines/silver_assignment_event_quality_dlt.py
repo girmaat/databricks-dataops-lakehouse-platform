@@ -1,7 +1,13 @@
-
 import dlt
 from pyspark.sql import Window
 from pyspark.sql import functions as F
+
+from quality_rules import (
+    is_blank,
+    add_quality_columns,
+    valid_rows,
+    quarantine_rows,
+)
 
 
 CATALOG_NAME = "adb_classic_compute_catalog"
@@ -18,8 +24,8 @@ SUPPORTED_LICENSE_TIER_IDS = ["PBI-PRO", "PBI-PPU"]
 @dlt.table(
     name="assignment_event_quality_dlt",
     comment=(
-        "Assignment event Silver quality table. Adds quality reasons and "
-        "quarantine flag to standardized assignment events."
+        "Assignment event Silver quality table. Applies reusable S05.02 quality rules, "
+        "adds quality_reasons, quality_reason_text, and is_quarantined."
     ),
 )
 def assignment_event_quality_dlt():
@@ -55,95 +61,81 @@ def assignment_event_quality_dlt():
         .withColumn(
             "assignment_has_assign_event",
             F.max(
-                F.when(F.col("operation_code") == F.lit("ASSIGN"), F.lit(1)).otherwise(F.lit(0))
+                F.when(
+                    F.col("operation_code") == F.lit("ASSIGN"),
+                    F.lit(1),
+                ).otherwise(F.lit(0))
             ).over(assignment_lifecycle_window),
         )
     )
 
-    quality_df = (
-        assignment_with_context_df
-        .withColumn(
-            "quality_reasons_raw",
-            F.array(
-                F.when(F.col("assignment_event_id").isNull(), F.lit("missing_assignment_event_id")),
-                F.when(F.col("assignment_event_id_occurrence_count") > 1, F.lit("duplicate_assignment_event_id")),
+    rules = [
+        ("missing_assignment_event_id", is_blank("assignment_event_id")),
+        (
+            "duplicate_assignment_event_id",
+            F.col("assignment_event_id_occurrence_count") > 1,
+        ),
 
-                F.when(F.col("assignment_id").isNull(), F.lit("missing_assignment_id")),
+        ("missing_assignment_id", is_blank("assignment_id")),
 
-                F.when(F.col("operation_code").isNull(), F.lit("missing_operation_code")),
-                F.when(
-                    F.col("operation_code").isNotNull()
-                    & (~F.col("operation_code").isin(SUPPORTED_OPERATION_CODES)),
-                    F.lit("unsupported_operation_code"),
-                ),
+        ("missing_operation_code", is_blank("operation_code")),
+        (
+            "unsupported_operation_code",
+            F.col("operation_code").isNotNull()
+            & (~F.col("operation_code").isin(SUPPORTED_OPERATION_CODES)),
+        ),
 
-                F.when(
-                    F.col("operation_sequence").isNull() | (F.col("operation_sequence") <= 0),
-                    F.lit("invalid_operation_sequence"),
-                ),
+        (
+            "invalid_operation_sequence",
+            F.col("operation_sequence").isNull()
+            | (F.col("operation_sequence") <= 0),
+        ),
 
-                F.when(F.col("operation_timestamp").isNull(), F.lit("invalid_operation_timestamp")),
-                F.when(F.col("effective_timestamp").isNull(), F.lit("invalid_effective_timestamp")),
+        ("invalid_operation_timestamp", F.col("operation_timestamp").isNull()),
+        ("invalid_effective_timestamp", F.col("effective_timestamp").isNull()),
 
-                F.when(F.col("employee_id").isNull(), F.lit("missing_employee_id")),
-                F.when(
-                    F.col("employee_id").isNotNull()
-                    & F.col("valid_employee_id").isNull(),
-                    F.lit("unknown_employee_id"),
-                ),
+        ("missing_employee_id", is_blank("employee_id")),
+        (
+            "unknown_employee_reference",
+            F.col("employee_id").isNotNull()
+            & F.col("valid_employee_id").isNull(),
+        ),
 
-                F.when(F.col("application_id").isNull(), F.lit("missing_application_id")),
-                F.when(
-                    F.col("application_id").isNotNull()
-                    & (~F.col("application_id").isin(SUPPORTED_APPLICATION_IDS)),
-                    F.lit("unsupported_application_id"),
-                ),
+        ("missing_application_id", is_blank("application_id")),
+        (
+            "unsupported_application_id",
+            F.col("application_id").isNotNull()
+            & (~F.col("application_id").isin(SUPPORTED_APPLICATION_IDS)),
+        ),
 
-                F.when(F.col("license_tier_id").isNull(), F.lit("missing_license_tier_id")),
-                F.when(
-                    F.col("license_tier_id").isNotNull()
-                    & (~F.col("license_tier_id").isin(SUPPORTED_LICENSE_TIER_IDS)),
-                    F.lit("unsupported_license_tier_id"),
-                ),
+        ("missing_license_tier_id", is_blank("license_tier_id")),
+        (
+            "unsupported_license_tier_id",
+            F.col("license_tier_id").isNotNull()
+            & (~F.col("license_tier_id").isin(SUPPORTED_LICENSE_TIER_IDS)),
+        ),
 
-                F.when(
-                    (F.col("operation_code") == F.lit("REVOKE"))
-                    & (F.col("assignment_has_assign_event") == F.lit(0)),
-                    F.lit("orphan_revoke"),
-                ),
-            ),
-        )
-        .withColumn(
-            "quality_reasons",
-            F.expr("filter(quality_reasons_raw, reason -> reason is not null)"),
-        )
-        .withColumn(
-            "is_quarantined",
-            F.size(F.col("quality_reasons")) > 0,
-        )
-        .drop("quality_reasons_raw")
-    )
+        (
+            "orphan_revoke",
+            (F.col("operation_code") == F.lit("REVOKE"))
+            & (F.col("assignment_has_assign_event") == F.lit(0)),
+        ),
+    ]
 
-    return quality_df
+    return add_quality_columns(assignment_with_context_df, rules)
 
 
 @dlt.table(
     name="assignment_event_valid_dlt",
-    comment="Valid assignment events after Silver DLT quality validation.",
+    comment="Valid assignment events after reusable S05.02 Silver quality validation.",
 )
 def assignment_event_valid_dlt():
-    return (
-        dlt.read("assignment_event_quality_dlt")
-        .where(F.col("is_quarantined") == False)
-    )
+    return valid_rows(dlt.read("assignment_event_quality_dlt"))
 
 
 @dlt.table(
     name="assignment_event_quarantine_dlt",
-    comment="Quarantined assignment events with quality reasons.",
+    comment="Quarantined assignment events with reusable S05.02 quality reasons.",
 )
 def assignment_event_quarantine_dlt():
-    return (
-        dlt.read("assignment_event_quality_dlt")
-        .where(F.col("is_quarantined") == True)
-    )
+    return quarantine_rows(dlt.read("assignment_event_quality_dlt"))
