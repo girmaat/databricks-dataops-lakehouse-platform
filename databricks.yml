@@ -1,0 +1,11 @@
+bundle:
+  name: assignment_usage_learning_platform
+
+include:
+  - resources/jobs/assignment_usage_learning_job.yml
+
+targets:
+  dev:
+    default: true
+    workspace:
+      host: https://adb-7405608514150925.5.azuredatabricks.net

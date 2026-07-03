@@ -1,0 +1,134 @@
+resources:
+  jobs:
+    assignment_usage_learning_job:
+      name: assignment_usage_learning_job
+      max_concurrent_runs: 1
+
+      parameters:
+        - name: source_delivery_date
+          default: "2026-05-15"
+        - name: report_as_of_date
+          default: "2026-05-31"
+        - name: catalog
+          default: "adb_classic_compute_catalog"
+        - name: bronze_schema
+          default: "bronze"
+        - name: silver_schema
+          default: "silver"
+        - name: gold_schema
+          default: "gold"
+        - name: run_mode
+          default: "daily"
+
+      job_clusters:
+        - job_cluster_key: assignment_usage_job_cluster
+          new_cluster:
+            spark_version: "15.4.x-scala2.12"
+            node_type_id: "Standard_DS3_v2"
+            num_workers: 1
+            data_security_mode: "SINGLE_USER"
+
+      tasks:
+        - task_key: run_bronze_employee_pipeline
+          pipeline_task:
+            pipeline_id: "9f828ddf-ea34-4fef-9673-bd2e10a8b483"
+            full_refresh: false
+
+        - task_key: run_bronze_assignment_pipeline
+          pipeline_task:
+            pipeline_id: "5f5df698-6c32-4031-b9f2-e60d0dc9908f"
+            full_refresh: false
+
+        - task_key: run_bronze_usage_pipeline
+          pipeline_task:
+            pipeline_id: "0c3d0a55-a2a1-4b6f-933e-cb5e1115c025"
+            full_refresh: false
+
+        - task_key: run_silver_employee_pipeline
+          depends_on:
+            - task_key: run_bronze_employee_pipeline
+          pipeline_task:
+            pipeline_id: "072aa33c-5851-4ebb-9e2b-641563dc5e5d"
+            full_refresh: false
+
+        - task_key: run_silver_assignment_pipeline
+          depends_on:
+            - task_key: run_bronze_assignment_pipeline
+            - task_key: run_silver_employee_pipeline
+          pipeline_task:
+            pipeline_id: "53efaa62-755a-4c4d-95cb-367f4066d4f1"
+            full_refresh: false
+
+        - task_key: run_silver_usage_pipeline
+          depends_on:
+            - task_key: run_bronze_usage_pipeline
+            - task_key: run_silver_employee_pipeline
+          pipeline_task:
+            pipeline_id: "52946677-d4bb-4b40-af4f-90a6b4470739"
+            full_refresh: false
+
+        - task_key: build_assignment_current_history
+          depends_on:
+            - task_key: run_silver_assignment_pipeline
+          job_cluster_key: assignment_usage_job_cluster
+          spark_python_task:
+            python_file: ../../src/processing/silver_assignment_current_history.py
+
+        - task_key: deduplicate_usage_events
+          depends_on:
+            - task_key: run_silver_usage_pipeline
+          job_cluster_key: assignment_usage_job_cluster
+          spark_python_task:
+            python_file: ../../src/processing/silver_application_usage_dedup_late_events.py
+
+        - task_key: refresh_gold_assignment_activity_status
+          depends_on:
+            - task_key: build_assignment_current_history
+            - task_key: deduplicate_usage_events
+          job_cluster_key: assignment_usage_job_cluster
+          spark_python_task:
+            python_file: ../../src/transformations/gold_assignment_activity_status.py
+
+        - task_key: refresh_gold_serving_views
+          depends_on:
+            - task_key: refresh_gold_assignment_activity_status
+          sql_task:
+            warehouse_id: "d308fee04cf35ba0"
+            file:
+              path: ../../resources/sql/analytics/assignment_activity_serving_views.sql
+
+        - task_key: refresh_gold_kpi_snapshot
+          depends_on:
+            - task_key: refresh_gold_serving_views
+          sql_task:
+            warehouse_id: "d308fee04cf35ba0"
+            file:
+              path: ../../resources/sql/analytics/assignment_activity_kpi_snapshot.sql
+
+        - task_key: run_gold_validation
+          depends_on:
+            - task_key: refresh_gold_kpi_snapshot
+          sql_task:
+            warehouse_id: "d308fee04cf35ba0"
+            file:
+              path: ../../resources/sql/validation/assignment_activity_serving_validation.sql
+
+        - task_key: workflow_failed_evidence_path
+          depends_on:
+            - task_key: run_bronze_employee_pipeline
+            - task_key: run_bronze_assignment_pipeline
+            - task_key: run_bronze_usage_pipeline
+            - task_key: run_silver_employee_pipeline
+            - task_key: run_silver_assignment_pipeline
+            - task_key: run_silver_usage_pipeline
+            - task_key: build_assignment_current_history
+            - task_key: deduplicate_usage_events
+            - task_key: refresh_gold_assignment_activity_status
+            - task_key: refresh_gold_serving_views
+            - task_key: refresh_gold_kpi_snapshot
+            - task_key: run_gold_validation
+          run_if: AT_LEAST_ONE_FAILED
+          sql_task:
+            warehouse_id: "d308fee04cf35ba0"
+            file:
+              path: ../../resources/sql/validation/workflow_failure_evidence.sql
